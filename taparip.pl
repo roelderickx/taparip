@@ -183,7 +183,8 @@ sub download_thread {
     my $schema = "$root_url :: $topic :: $start";
     my $dom = cache_get($schema);
 
-    $dbh->do('DELETE from posts where topic = ?', undef, $topic);
+    $dbh->do('DELETE from posts where topic = ? and seq between ? and
+ ?', undef, $topic, $start, $start + $posts_per_page - 1);
     if ($dbh->err) { die "Unable to delete $topic: $dbh-err : $dbh->errstr \n"; }
 
     if(! $dom) {
