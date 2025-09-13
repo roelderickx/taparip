@@ -22,7 +22,8 @@ $| = 1;
 
 # Site Configuration
 #     http://domain.yuku.com/viewtopic.php?t=11571&start=0
-my $domain         = 'www.tapatalk.com/groups/example_forum/';
+my $forumname      = 'example_forum';
+my $domain         = "https://www.tapatalk.com/groups/$forumname";
 my $api_path       = 'viewtopic.php';
 # This is the path of where the database file will be created
 # (If you use a relative path, you should keep running it from the same working directory)
@@ -52,10 +53,10 @@ my $authorz = '';
 
 # The Actual program
 #####################
-my $root_url = "https://$domain/$api_path";
+my $root_url = "$domain/$api_path";
 
 if ($username and not @ARGV) {
-    $ua->get("https://$domain");
+    $ua->get("$domain/");
     my ($sid, $sid_backup);
     my $cookies = $ua->cookie_jar->all;
     for (@$cookies) {
@@ -68,7 +69,7 @@ if ($username and not @ARGV) {
     }
     $sid ||= $sid_backup;
     print "Logging in with user: $username, session_id: $sid\n";
-    my $res_fwd1 = $ua->get("https://$domain/auth.php?action=ttid_login&import_login=1")->res;
+    my $res_fwd1 = $ua->get("$domain/auth.php?action=ttid_login&import_login=1")->res;
     if ($res_fwd1->code eq '302') {
         my $res_fwd2 = $ua->get($res_fwd1->headers->location)->res;
         if ($res_fwd2->code eq '200') {
@@ -210,35 +211,35 @@ sub download_thread {
     if ($dbh->err) { die "Unable to delete $topic: $dbh-err : $dbh->errstr \n"; }
 
     if(! $dom) {
-      do_sleep();
-      my $mojo_obj = $ua->get($root_url, { 'Accept' => 'text/html'}, 'form' => {
-          t => $topic,
-          start => $start
-      });
+        do_sleep();
+        my $mojo_obj = $ua->get($root_url, { 'Accept' => 'text/html'}, 'form' => {
+            t => $topic,
+            start => $start
+        });
 
-      if ($mojo_obj->res->code eq '302') {
-          $mojo_obj = $ua->get($mojo_obj->res->headers->location);
-      }
+        if ($mojo_obj->res->code eq '302') {
+            $mojo_obj = $ua->get($mojo_obj->res->headers->location);
+        }
 
-      cache_put($schema, $mojo_obj);
+        cache_put($schema, $mojo_obj);
 
-      my $res = $mojo_obj->res;
+        my $res = $mojo_obj->res;
 
-      unless ($res->is_success) {
-          if ($res->code eq '404') {
-              $dbh->do("INSERT OR IGNORE INTO bogusthreads VALUES (?)", undef, $topic);
-              say " - 404, bogus topic";
-              return undef;
-          }
-          else {
-              confess "HTTP error: " . $res->code . ' ' . $res->message
-               . ( $start ? " -- died in the middle of t=$topic\&$start=$start" : '');
-          }
-      }
-      print " - downloaded - ";
-      $dom = $res->dom();
+        unless ($res->is_success) {
+            if ($res->code eq '404') {
+                $dbh->do("INSERT OR IGNORE INTO bogusthreads VALUES (?)", undef, $topic);
+                say " - 404, bogus topic";
+                return undef;
+            }
+            else {
+                confess "HTTP error: " . $res->code . ' ' . $res->message
+                 . ( $start ? " -- died in the middle of t=$topic\&$start=$start" : '');
+            }
+        }
+        print " - downloaded - ";
+        $dom = $res->dom();
     } else {
-      print " - cached - ";
+        print " - cached - ";
     }
 
     if ($dom->at('.login-body')) {
@@ -268,15 +269,16 @@ sub extract_posts {
     my $dom = shift;
 
     # Get topic information, even if we already have it
- my $title = $dom->find('.topic-title a')->[0]->text();
+    my $title = $dom->find('.topic-title a')->[0]->text();
     my $topic_id = $dom->find('link[rel="alternate"][title^="Feed - Topic -"]')->first;
-if (defined $topic_id) {
-$topic_id = $topic_id->attr('href');
-    $topic_id =~ s|^.*?/topic/(\d+).*$|$1|s; }
-#fallback
-else {
-$topic_id = $dom->at('.action-bar input')->attr('value');
-}
+    if (defined $topic_id) {
+        $topic_id = $topic_id->attr('href');
+        $topic_id =~ s|^.*?/topic/(\d+).*$|$1|s;
+    }
+    #fallback
+    else {
+        $topic_id = $dom->at('.action-bar input')->attr('value');
+    }
     my $forumid = $dom->find('#nav-breadcrumbs .crumb:last-child')->last->attr('data-forum-id');
     say $title;
 
@@ -289,40 +291,46 @@ $topic_id = $dom->at('.action-bar input')->attr('value');
         my $pid = substr( $post->attr('id'), 2);
         my $count   = substr( $post->at('.author a span')->text, 1) - 1;
         my $datestr = $post->at('.timespan')->attr('title');
-my @datestrings = split / - /, $datestr;
-my $dater = "$datestrings[1] $datestrings[0]";
+        my @datestrings = split / - /, $datestr;
+        my $dater = "$datestrings[1] $datestrings[0]";
         my $date = ParseDateString($dater);
         my $timestamp = UnixDate($date, '%s');
-        my $author = $post->at('.avatar-username-inner .thread-user-name a');
-if (defined $author && $author ne '') { $authorz = $author->text(); $author = $authorz; }
-else { $author = $authorz; }
+        my $author = $post->at('.avatar-username-inner .thread-user-name a span');
+        if (defined $author && $author ne '') {
+            $authorz = $author->text(); $author = $authorz;
+        }
+        else {
+            $author = $authorz;
+        }
 
-# We have post titles again now, and it might be easier than before.
-my $posttitle = $post->at('.post-title');
-if (defined $posttitle && $posttitle ne '') { $posttitle = $posttitle->text(); }
+        # We have post titles again now, and it might be easier than before.
+        my $posttitle = $post->at('.post-title');
+        if (defined $posttitle && $posttitle ne '') {
+            $posttitle = $posttitle->text();
+        }
 
         # were we edited?
         my $edit_count = -1;
         my ($last_editor, $edit_time);
 
-# The Great AJAX Adventure
+        # The Great AJAX Adventure
         if (my $notice = $post->at('.notice') ) {
-    my $eres = cget("https://$domain/app.php/history/getposthistory?postid=$pid")->res;
-    my $adom = $eres->dom();
-    if ($adom->at("#historyline_$pid")) {
-$last_editor = $adom->at('a')->text;
-my $edittakeone = $adom->at("div + *")->text;
-my @editstrings = split / on /, $edittakeone;
-@editstrings = split / - /, $editstrings[1];
-my $editor = "$editstrings[1] $editstrings[0]";
-        my $edate = ParseDateString($editor);
-        $edit_time = UnixDate($edate, '%s');
-    $adom->find("div")->each( sub {
-$edit_count++;});
-
-    }
-# End of the Great AJAX Adventure
+            my $eres = cget("$domain/app.php/history/getposthistory?postid=$pid")->res;
+            my $adom = $eres->dom();
+            if ($adom->at("#historyline_$pid")) {
+                $last_editor = $adom->at('a')->text;
+                my $edittakeone = $adom->at("div + *")->text;
+                my @editstrings = split / on /, $edittakeone;
+                @editstrings = split / - /, $editstrings[1];
+                my $editor = "$editstrings[1] $editstrings[0]";
+                my $edate = ParseDateString($editor);
+                $edit_time = UnixDate($edate, '%s');
+                $adom->find("div")->each( sub {
+                    $edit_count++;
+                });
+            }
         }
+        # End of the Great AJAX Adventure
 
         my $attach_node = $post->at('.attachbox');
         my $content_node = $post->at('.content');
@@ -330,31 +338,21 @@ $edit_count++;});
                       ($attach_node ? $attach_node->content : '');
         my $sig = $post->at('.signature');
         my $signature = $sig ? $post->at('.signature')->content : undef;
-#say "PID: $pid";
-#say "TOPICID: $topic_id";
-#say "COUNT: $count";
-#say "AUTHOR: $author";
-#say "TIMESTAMP: $timestamp";
-#say "EDITCOUNT: $edit_count";
-#say "LASTEDITOR: $last_editor";
-#say "EDITTIME: $edit_time";
-#say "POSTTITLE: $posttitle";
-#say "COOONTEEEEENT: $content";
-#say "SIIIGNATURE: $signature";
+
         $dbh->do('INSERT OR IGNORE INTO posts (pid, topic, seq, author, utime, edit_count, edit_user, edit_time, post_title, content, signature)
             VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', undef,
             $pid, $topic_id, $count, $author, $timestamp, $edit_count, $last_editor, $edit_time, $posttitle, $content, $signature
         );
-if ($dbh->err) { die "Import failed: $dbh-err : $dbh->errstr \n"; }
+        if ($dbh->err) { die "Import failed: $dbh-err : $dbh->errstr \n"; }
         ++$savecount;
 
         # If we haven't seen this user yet, add her to the DB
         unless ($seen_users{$author}) {
             my $join_date = UnixDate( ParseDateString( $post->at('.timespan')->text ), "%s" );
-	# Tapatalk axed usergroup readings for some reason, so for now just skip this... 
-	# keep track of your own staff.
+	        # Tapatalk axed usergroup readings for some reason, so for now just skip this... 
+	        # keep track of your own staff.
             # my $rank = $post->at('dd.profile-rank')->text;
-	my $rank = '0';
+	        my $rank = '0';
             my $post_count = $post->at('.avatar-username-inner .user-statistics .nowrap > span')->text;
             $post_count =~ s/\D//g;
             $dbh->do("INSERT INTO users (username, join_date, post_count, rank) VALUES (?, ?, ?, ?)", undef,
