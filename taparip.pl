@@ -41,7 +41,7 @@ my @get_topics     = (); # (1, 2000)
 my $repeat_thread  = 1;
 # optionally add a delay (in microseconds) between requests to
 # prevent problems if they throttle you (download only)
-my $delay          = 2_000_000;
+my $delay          = 4_000_000;
 # verbose messages during run?
 my $verbose        = 1;
 # Use login (should work)
@@ -68,20 +68,43 @@ if ($username and not @ARGV) {
     }
     $sid ||= $sid_backup;
     print "Logging in with user: $username, session_id: $sid\n";
-    # Form POST (application/x-www-form-urlencoded)
-    my $res = $ua->post("https://$domain/ucp.php?mode=login&import_login=1" => form => {
-        username => $username,
-        password => $password,
-        login    => 'Login',
-        redirect => 'viewtopic.php',
-        sid      => $sid,
-    })->res;
-    if ($res->code eq '200') {
-        print "Login failed\n"; # should have redirected
-        print "Proceeding anyway...\n";
+    my $res_fwd1 = $ua->get("https://$domain/auth.php?action=ttid_login&import_login=1")->res;
+    if ($res_fwd1->code eq '302') {
+        my $res_fwd2 = $ua->get($res_fwd1->headers->location)->res;
+        if ($res_fwd2->code eq '200') {
+            # Parse login form hidden parameters
+	        my $dom = $res_fwd2->dom();
+	        my %params;
+            for my $e ($dom->find('form > input')->each) {
+                $params{$e->{'name'}} = $e->{'value'};
+            }
+            # Form POST (application/x-www-form-urlencoded)
+	        my $res = $ua->post($res_fwd1->headers->location => form => {
+	            _token => $params{'_token'},
+	            response_type => $params{'response_type'},
+	            client_id => $params{'client_id'},
+	            redirect_url => $params{'redirect_url'},
+	            state => $params{'state'},
+	            scope => $params{'scope'},
+	            username => $username,
+	            password => $password
+	        })->res;
+	        #print Dumper($res);
+	        if ($res->code eq '200') {
+                print "Login successful\n";
+            }
+            else {
+                print "Login failed: $(res->code); $(res->headers->location)\n"
+            }
+        }
+        else {
+            print "Login failed\n"; # should have returned the login form
+            print "Proceeding anyway...\n";
+        }
     }
     else {
-        print "Login successful\n";
+        print "Login failed\n"; # should have redirected
+        print "Proceeding anyway...\n";
     }
 }
 
@@ -183,8 +206,7 @@ sub download_thread {
     my $schema = "$root_url :: $topic :: $start";
     my $dom = cache_get($schema);
 
-    $dbh->do('DELETE from posts where topic = ? and seq between ? and
- ?', undef, $topic, $start, $start + $posts_per_page - 1);
+    $dbh->do('DELETE from posts where topic = ? and seq between ? and ?', undef, $topic, $start, $start + $posts_per_page - 1);
     if ($dbh->err) { die "Unable to delete $topic: $dbh-err : $dbh->errstr \n"; }
 
     if(! $dom) {
@@ -193,6 +215,11 @@ sub download_thread {
           t => $topic,
           start => $start
       });
+
+      if ($mojo_obj->res->code eq '302') {
+          $mojo_obj = $ua->get($mojo_obj->res->headers->location);
+      }
+
       cache_put($schema, $mojo_obj);
 
       my $res = $mojo_obj->res;
@@ -213,7 +240,6 @@ sub download_thread {
     } else {
       print " - cached - ";
     }
-
 
     if ($dom->at('.login-body')) {
         $dbh->do("INSERT OR IGNORE INTO unauthorized VALUES (?)", undef, $topic);
