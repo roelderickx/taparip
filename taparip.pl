@@ -1,6 +1,7 @@
 use v5.18;
 use strict;
 use warnings;
+use feature 'try';
 use Mojo::UserAgent;
 use Mojo::DOM;
 use Carp;
@@ -22,7 +23,7 @@ $| = 1;
 
 # Site Configuration
 #     http://domain.yuku.com/viewtopic.php?t=11571&start=0
-my $forumname      = 'example_forum';
+my $forumname      = 'example_group';
 my $domain         = "https://www.tapatalk.com/groups/$forumname";
 my $api_path       = 'viewtopic.php';
 # This is the path of where the database file will be created
@@ -171,13 +172,13 @@ sub cget {
     } else {
         my $ua = Mojo::UserAgent->new;
         my $tx = $ua->get($url);
+        my $code = $tx->res->code;
 
-        if (my $res = $tx->success) {
-            cache_put($url, $res);
+        if ($code eq '200') {
+            cache_put($url, $tx);
             return Mojo::DOM->new($content);
         } else {
-            my ($err, $code) = $tx->error;
-            die "Failed to fetch content for $url: $err (HTTP status code: $code)";
+            die "Failed to fetch content for $url: HTTP status code $code";
         }
     }
 }
@@ -239,6 +240,8 @@ sub download_thread {
         print " - downloaded - ";
         $dom = $res->dom();
     } else {
+        #my $md5 = md5_hex($schema);
+        #print " - cached as $md5 - ";
         print " - cached - ";
     }
 
@@ -248,28 +251,39 @@ sub download_thread {
         return undef;
     }
     my $savecount = extract_posts( $dom );
-    print "$savecount saved\n";
+    if ($savecount == -1) {
+        $dbh->do("INSERT OR IGNORE INTO bogusthreads VALUES (?)", undef, $topic);
+        say " - 404, bogus topic";
+    }
+    else {
+        print "$savecount saved\n";
 
-    unless ( $start > 0 ) {
-        # get thread size
-        $dom->find('.pagination')->last->text =~ /(\d+) post/;
-        my $postcount = $1;
+        unless ( $start > 0 ) {
+            # get thread size
+            $dom->find('.pagination')->last->text =~ /(\d+) post/;
+            my $postcount = $1;
 
-        # recurse if we need more pages
-        $start += $posts_per_page;
-        while ( $start < $postcount ) {
-            download_thread( $topic, $start );
+            # recurse if we need more pages
             $start += $posts_per_page;
+            while ( $start < $postcount ) {
+                download_thread( $topic, $start );
+                $start += $posts_per_page;
+            }
         }
     }
-
 }
 
 sub extract_posts {
     my $dom = shift;
 
     # Get topic information, even if we already have it
-    my $title = $dom->find('.topic-title a')->[0]->text();
+    my $title;
+    try {
+        $title = $dom->find('.topic-title a')->[0]->text();
+    }
+    catch ($e) {
+        return -1;
+    }
     my $topic_id = $dom->find('link[rel="alternate"][title^="Feed - Topic -"]')->first;
     if (defined $topic_id) {
         $topic_id = $topic_id->attr('href');
@@ -315,19 +329,24 @@ sub extract_posts {
 
         # The Great AJAX Adventure
         if (my $notice = $post->at('.notice') ) {
-            my $eres = cget("$domain/app.php/history/getposthistory?postid=$pid")->res;
-            my $adom = $eres->dom();
-            if ($adom->at("#historyline_$pid")) {
-                $last_editor = $adom->at('a')->text;
-                my $edittakeone = $adom->at("div + *")->text;
-                my @editstrings = split / on /, $edittakeone;
-                @editstrings = split / - /, $editstrings[1];
-                my $editor = "$editstrings[1] $editstrings[0]";
-                my $edate = ParseDateString($editor);
-                $edit_time = UnixDate($edate, '%s');
-                $adom->find("div")->each( sub {
-                    $edit_count++;
-                });
+            try {
+                my $eres = cget("$domain/app.php/history/getposthistory?postid=$pid")->res;
+                my $adom = $eres->dom();
+                if ($adom->at("#historyline_$pid")) {
+                    $last_editor = $adom->at('a')->text;
+                    my $edittakeone = $adom->at("div + *")->text;
+                    my @editstrings = split / on /, $edittakeone;
+                    @editstrings = split / - /, $editstrings[1];
+                    my $editor = "$editstrings[1] $editstrings[0]";
+                    my $edate = ParseDateString($editor);
+                    $edit_time = UnixDate($edate, '%s');
+                    $adom->find("div")->each( sub {
+                        $edit_count++;
+                    });
+                }
+            }
+            catch ($e) {
+                print $e;
             }
         }
         # End of the Great AJAX Adventure
@@ -353,8 +372,14 @@ sub extract_posts {
 	        # keep track of your own staff.
             # my $rank = $post->at('dd.profile-rank')->text;
 	        my $rank = '0';
-            my $post_count = $post->at('.avatar-username-inner .user-statistics .nowrap > span')->text;
-            $post_count =~ s/\D//g;
+	        my $post_count = 0;
+	        try {
+                $post_count = $post->at('.avatar-username-inner .user-statistics .nowrap > span')->text;
+                $post_count =~ s/\D//g;
+            }
+            catch ($e) {
+                #print "Guest user: no postcount\n";
+            }
             $dbh->do("INSERT INTO users (username, join_date, post_count, rank) VALUES (?, ?, ?, ?)", undef,
                 $author, $join_date, $post_count, $rank
             ) or print "Couldn't insert user $author";
