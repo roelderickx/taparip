@@ -92,11 +92,12 @@ if ($username and not @ARGV) {
 	            password => $password
 	        })->res;
 	        #print Dumper($res);
-	        if ($res->code eq '200') {
+	        if ($res->code eq '200' || $res->code eq '302') {
                 print "Login successful\n";
             }
             else {
-                print "Login failed: $(res->code); $(res->headers->location)\n"
+                print "Login failed, HTTP status code ", $res->code, "\n";
+                print "Proceeding anyway...\n";
             }
         }
         else {
@@ -232,6 +233,11 @@ sub download_thread {
                 say " - 404, bogus topic";
                 return undef;
             }
+            elsif ($res->code eq '403') {
+                $dbh->do("INSERT OR IGNORE INTO unauthorized VALUES (?)", undef, $topic);
+                say " - UNAUTHORIZED THREAD";
+                return undef;
+            }
             else {
                 confess "HTTP error: " . $res->code . ' ' . $res->message
                  . ( $start ? " -- died in the middle of t=$topic\&$start=$start" : '');
@@ -247,7 +253,7 @@ sub download_thread {
 
     if ($dom->at('.login-body')) {
         $dbh->do("INSERT OR IGNORE INTO unauthorized VALUES (?)", undef, $topic);
-        say "UNAUTHORIZED THREAD";
+        say " - UNAUTHORIZED THREAD";
         return undef;
     }
     my $savecount = extract_posts( $dom );
@@ -328,27 +334,28 @@ sub extract_posts {
         my ($last_editor, $edit_time);
 
         # The Great AJAX Adventure
-        if (my $notice = $post->at('.notice') ) {
-            try {
-                my $eres = cget("$domain/app.php/history/getposthistory?postid=$pid")->res;
-                my $adom = $eres->dom();
-                if ($adom->at("#historyline_$pid")) {
-                    $last_editor = $adom->at('a')->text;
-                    my $edittakeone = $adom->at("div + *")->text;
-                    my @editstrings = split / on /, $edittakeone;
-                    @editstrings = split / - /, $editstrings[1];
-                    my $editor = "$editstrings[1] $editstrings[0]";
-                    my $edate = ParseDateString($editor);
-                    $edit_time = UnixDate($edate, '%s');
-                    $adom->find("div")->each( sub {
-                        $edit_count++;
-                    });
-                }
-            }
-            catch ($e) {
-                print $e;
-            }
-        }
+        # -> does not work correctly, always returning 403 forbidden
+        #if (my $notice = $post->at('.notice') ) {
+        #    try {
+        #        my $eres = cget("$domain/app.php/history/getposthistory?postid=$pid")->res;
+        #        my $adom = $eres->dom();
+        #        if ($adom->at("#historyline_$pid")) {
+        #            $last_editor = $adom->at('a')->text;
+        #            my $edittakeone = $adom->at("div + *")->text;
+        #            my @editstrings = split / on /, $edittakeone;
+        #            @editstrings = split / - /, $editstrings[1];
+        #            my $editor = "$editstrings[1] $editstrings[0]";
+        #            my $edate = ParseDateString($editor);
+        #            $edit_time = UnixDate($edate, '%s');
+        #            $adom->find("div")->each( sub {
+        #                $edit_count++;
+        #            });
+        #        }
+        #    }
+        #    catch ($e) {
+        #        print $e;
+        #    }
+        #}
         # End of the Great AJAX Adventure
 
         my $attach_node = $post->at('.attachbox');
@@ -368,6 +375,10 @@ sub extract_posts {
         # If we haven't seen this user yet, add her to the DB
         unless ($seen_users{$author}) {
             my $join_date = UnixDate( ParseDateString( $post->at('.timespan')->text ), "%s" );
+            if (! defined $join_date) {
+                # current year, for example 11:41 PM - Apr 03
+                $join_date = 0;
+            }
 	        # Tapatalk axed usergroup readings for some reason, so for now just skip this... 
 	        # keep track of your own staff.
             # my $rank = $post->at('dd.profile-rank')->text;
